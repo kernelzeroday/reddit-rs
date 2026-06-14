@@ -4,15 +4,24 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FALLBACK_INSTANCES: &[&str] = &[
-    "http://75.119.154.243:8081",
-    "https://red.artemislena.eu",
-    "https://redlib.privacyredirect.com",
-    "https://redlib.privadency.com",
     "https://redlib.catsarch.com",
     "https://redlib.nadeko.net",
+    "https://redlib.privacyredirect.com",
+    "https://redlib.privadency.com",
+    "https://red.artemislena.eu",
     "https://redlib.perennialte.ch",
     "https://redlib.r4fo.com",
     "https://redlib.cow.rip",
+    "https://safereddit.com",
+    "https://redlib.freedit.eu",
+    "https://redlib.tux.pizza",
+    "http://5.78.153.91:8080",
+    "http://49.12.202.92:8080",
+    "http://80.78.26.224:8080",
+    "http://141.148.241.203:9090",
+    "http://158.101.203.185:9090",
+    "http://141.144.204.22:9090",
+    "http://45.61.149.226:8080",
 ];
 
 fn now() -> i64 {
@@ -45,6 +54,7 @@ pub struct InstanceInfo {
     pub failure_count: u32,
     pub avg_latency_ms: Option<u64>,
     pub last_error: Option<String>,
+    pub discovered_from: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -116,6 +126,12 @@ impl Db {
         )
         .expect("failed to create schema");
 
+        conn.execute(
+            "ALTER TABLE instances ADD COLUMN discovered_from TEXT",
+            [],
+        )
+        .ok();
+
         let db = Db { conn };
         db.seed_fallback();
         db.maybe_cleanup();
@@ -129,12 +145,8 @@ impl Db {
             .unwrap_or(0);
 
         if count == 0 {
-            let mut stmt = self
-                .conn
-                .prepare("INSERT OR IGNORE INTO instances (url) VALUES (?1)")
-                .unwrap();
             for url in FALLBACK_INSTANCES {
-                stmt.execute(params![url]).ok();
+                self.add_instance(url, Some("fallback"));
             }
         }
     }
@@ -384,7 +396,7 @@ impl Db {
             .conn
             .prepare(
                 "SELECT url, success_count, failure_count, avg_latency_ms,
-                        last_success, last_failure, last_error
+                        last_success, last_failure, last_error, discovered_from
                  FROM instances ORDER BY success_count DESC",
             )
             .unwrap();
@@ -396,6 +408,7 @@ impl Db {
                 failure_count: row.get::<_, i64>(2)? as u32,
                 avg_latency_ms: row.get::<_, Option<i64>>(3)?.map(|v| v as u64),
                 last_error: row.get(6)?,
+                discovered_from: row.get(7)?,
             })
         })
         .unwrap()
@@ -403,11 +416,12 @@ impl Db {
         .collect()
     }
 
-    pub fn add_instance(&self, url: &str) {
+    pub fn add_instance(&self, url: &str, source: Option<&str>) {
         self.conn
             .execute(
-                "INSERT OR IGNORE INTO instances (url) VALUES (?1)",
-                params![url],
+                "INSERT INTO instances (url, discovered_from) VALUES (?1, ?2)
+                 ON CONFLICT(url) DO UPDATE SET discovered_from = COALESCE(discovered_from, ?2)",
+                params![url, source],
             )
             .ok();
     }

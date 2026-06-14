@@ -169,14 +169,15 @@ pub fn print_instance_list(instances: &[InstanceInfo]) {
     }
 
     println!(
-        "{:<45} {:>5} {:>5} {:>8}  {}",
+        "{:<45} {:<10} {:>5} {:>5} {:>8}  {}",
         "INSTANCE".bold(),
+        "SOURCE".bold(),
         "OK".green().bold(),
         "FAIL".red().bold(),
         "LATENCY".bold(),
         "LAST ERROR".bold(),
     );
-    println!("{}", "─".repeat(90).dimmed());
+    println!("{}", "─".repeat(100).dimmed());
 
     for inst in instances {
         let latency = inst
@@ -189,10 +190,12 @@ pub fn print_instance_list(instances: &[InstanceInfo]) {
             .and_then(|s| s.strip_prefix(": "))
             .unwrap_or(raw_error);
         let error_display = truncate(error, 25);
+        let source = inst.discovered_from.as_deref().unwrap_or("—");
 
         println!(
-            "{:<45} {:>5} {:>5} {:>8}  {}",
+            "{:<45} {:<10} {:>5} {:>5} {:>8}  {}",
             inst.url,
+            source.dimmed(),
             inst.success_count.to_string().green(),
             inst.failure_count.to_string().red(),
             latency,

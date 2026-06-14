@@ -50,7 +50,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Discover and probe Redlib instances
-    Discover,
+    Discover {
+        /// Scan Shodan for unlisted instances (requires `shodan` CLI)
+        #[arg(long)]
+        shodan: bool,
+        /// Search the web for instance lists (requires `searx` CLI)
+        #[arg(long)]
+        searx: bool,
+        /// Use all discovery sources (curated + shodan + searx)
+        #[arg(long)]
+        deep: bool,
+    },
     /// List known instances with health data
     List,
     /// Show aggregate statistics
@@ -102,8 +112,17 @@ async fn main() {
     let http = client::build_client();
 
     match cli.command {
-        Some(Command::Discover) => {
-            discover::discover(&http, &db, cli.verbose).await;
+        Some(Command::Discover { shodan, searx, deep }) => {
+            let mode = if deep {
+                discover::DiscoverMode::Deep
+            } else if shodan {
+                discover::DiscoverMode::Shodan
+            } else if searx {
+                discover::DiscoverMode::Searx
+            } else {
+                discover::DiscoverMode::Quick
+            };
+            discover::discover(&http, &db, cli.verbose, mode).await;
         }
 
         Some(Command::List) => {
