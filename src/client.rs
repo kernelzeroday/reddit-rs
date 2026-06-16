@@ -97,7 +97,7 @@ pub async fn fetch_subreddit(
         .await
         .map_err(|e| FetchError::Network(format!("{base_url}: {e}")))?;
 
-    if html.contains("anubis_challenge") || html.contains("Making sure you&#39;re not a bot") {
+    if is_blocked(&html) {
         return Err(FetchError::Blocked(base_url.to_string()));
     }
 
@@ -105,6 +105,13 @@ pub async fn fetch_subreddit(
     let latency_ms = start.elapsed().as_millis() as u64;
 
     Ok(FetchResult { posts, latency_ms })
+}
+
+fn is_blocked(html: &str) -> bool {
+    html.contains("anubis_challenge")
+        || html.contains("Making sure you&#39;re not a bot")
+        || html.contains("Checking your browser...")
+        || html.contains("verify you are not a clanker")
 }
 
 fn html_decode(s: &str) -> String {
@@ -126,7 +133,7 @@ static TITLE_RE: LazyLock<Regex> = LazyLock::new(|| {
 static SCORE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"<div class="post_score" title="([^"]*)">"#).unwrap());
 static AUTHOR_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"<a class="post_author[^"]*" href="/u/([^"]+)">"#).unwrap());
+    LazyLock::new(|| Regex::new(r#"<a class="post_author[^"]*" href="/(?:u|user)/([^"]+)">"#).unwrap());
 static COMMENTS_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"class="post_comments" title="([^"]*)">"#).unwrap());
 static FLAIR_RE: LazyLock<Regex> =
@@ -170,7 +177,7 @@ pub async fn search(
         .await
         .map_err(|e| FetchError::Network(format!("{base_url}: {e}")))?;
 
-    if html.contains("anubis_challenge") || html.contains("Making sure you&#39;re not a bot") {
+    if is_blocked(&html) {
         return Err(FetchError::Blocked(base_url.to_string()));
     }
 
@@ -206,15 +213,23 @@ pub async fn fetch_post(
         .await
         .map_err(|e| FetchError::Network(format!("{base_url}: {e}")))?;
 
-    if html.contains("anubis_challenge") || html.contains("Making sure you&#39;re not a bot") {
+    if is_blocked(&html) {
         return Err(FetchError::Blocked(base_url.to_string()));
     }
 
     let latency_ms = start.elapsed().as_millis() as u64;
 
-    let title = TITLE_RE
+    static DETAIL_TITLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?s)<h1 class="post_title">\s*(?:<a[^>]*class="post_flair"[^>]*>.*?</a>\s*)?(.+?)\s*</h1>"#).unwrap()
+    });
+    static COMMENT_COUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"<p id="comment_count">(\d+)\s*comment"#).unwrap()
+    });
+
+    let title = DETAIL_TITLE_RE
         .captures(&html)
-        .map(|c| html_decode(&c[2]))
+        .map(|c| html_decode(c[1].trim()))
+        .or_else(|| TITLE_RE.captures(&html).map(|c| html_decode(&c[2])))
         .unwrap_or_default();
     let author = AUTHOR_RE
         .captures(&html)
@@ -224,9 +239,10 @@ pub async fn fetch_post(
         .captures(&html)
         .map(|c| c[1].to_string())
         .unwrap_or_default();
-    let comment_count = COMMENTS_RE
+    let comment_count = COMMENT_COUNT_RE
         .captures(&html)
-        .map(|c| c[1].to_string())
+        .map(|c| format!("{} comments", &c[1]))
+        .or_else(|| COMMENTS_RE.captures(&html).map(|c| c[1].to_string()))
         .unwrap_or_default();
 
     let subreddit = permalink
@@ -265,10 +281,13 @@ fn strip_tags(s: &str) -> String {
 
 fn parse_comments(html: &str) -> Vec<Comment> {
     static CMT_AUTHOR_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"<a class="comment_author\s*([^"]*)" href="/user/([^"]+)">"#).unwrap()
+        Regex::new(r#"<(?:a|span) class="comment_author\s*([^"]*)"(?:\s+href="/user/([^"]+)")?\s*>"#).unwrap()
     });
     static CMT_BODY_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r#"(?s)<div class="comment_body[^"]*">(.*?)</div>"#).unwrap()
+    });
+    static CMT_SCORE_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"<p class="comment_score" title="([^"]*)">"#).unwrap()
     });
 
     let mut comments = Vec::new();
@@ -303,7 +322,9 @@ fn parse_comments(html: &str) -> Vec<Comment> {
             1 => {
                 let caps = CMT_AUTHOR_RE.captures(remaining).unwrap();
                 let classes = caps[1].to_string();
-                let author = caps[2].to_string();
+                let author = caps.get(2)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| "[deleted]".to_string());
                 let op = classes.contains("op");
                 let current_depth = (depth - 1).max(0) as usize;
 
@@ -313,10 +334,17 @@ fn parse_comments(html: &str) -> Vec<Comment> {
                     .map(|c| html_decode(&strip_tags(&c[1])))
                     .unwrap_or_default();
 
+                let before_author = &html[..pos + offset];
+                let score = CMT_SCORE_RE
+                    .captures_iter(before_author)
+                    .last()
+                    .map(|c| c[1].to_string())
+                    .unwrap_or_default();
+
                 comments.push(Comment {
                     author,
                     body,
-                    score: String::new(),
+                    score,
                     op,
                     depth: current_depth,
                 });
